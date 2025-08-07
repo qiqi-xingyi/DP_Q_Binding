@@ -11,7 +11,7 @@ SPHNet is an efficient and scalable equivariant network that incorporates adapti
 By running the following command, you will create a virtual environment with all the necessary packages to run the code.
 Note that it is better to use CUDA driver more than 520, due to the requirement of the package `CUDA Toolkit 12`.
 ```bash
-conda env create -n sphnet -f environment.yaml
+conda env create -n sphnet -f environment_mac.yaml
 conda activate sphnet
 ```
 
