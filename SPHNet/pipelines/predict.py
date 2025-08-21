@@ -4,9 +4,6 @@
 # @Email : yzhan135@kent.edu
 # @File:predict.py
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import sys
 import glob
@@ -16,12 +13,11 @@ import torch
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 
-# add repo src
+# repo root
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 repo_root = os.path.join(cur_dir, "..")
 sys.path.append(repo_root)
 
-from src.utility.hydra_config import Config
 from src.training.data import DataModule
 from src.training.module import LNNP
 from src.training.logger import get_latest_ckpt
@@ -33,7 +29,7 @@ except Exception:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Inspect-only predictor: print keys & shapes of model outputs (no saving).")
+    p = argparse.ArgumentParser(description="Inspect-only predictor: print model prediction fields (no saving).")
     p.add_argument("--ckpt", type=str, default=None, help="Path to checkpoint. If omitted, use latest under outputs/<job_id>/")
     p.add_argument("--job_id", type=str, default="train_quick", help="Folder under outputs/ to read ckpt from if --ckpt not set")
     p.add_argument("--dataset_path", type=str, required=True, help="Path to dataset (e.g., ./example_data/data.mdb or .lmdb)")
@@ -49,20 +45,15 @@ def parse_args():
 
 def load_project_config(args):
     """
-    Load the repo's default config/config.yaml, merge with schema, then override fields from CLI.
-    This avoids 'Missing mandatory value' errors (e.g., schedule).
+    Load config/config.yaml as-is (Hydra-style), make it non-struct, then override needed fields.
+    Do NOT merge with a structured schema to avoid 'defaults' key conflicts.
     """
-    # 1) schema with strong types
-    schema = OmegaConf.structured(Config)
-
-    # 2) load default yaml from repo
     default_cfg_path = os.path.join(repo_root, "config", "config.yaml")
     if not os.path.isfile(default_cfg_path):
         raise FileNotFoundError(f"Cannot find default config at {default_cfg_path}")
-    file_cfg = OmegaConf.load(default_cfg_path)
 
-    # 3) merge: schema <- file <- CLI overrides
-    cfg = OmegaConf.merge(schema, file_cfg)
+    cfg = OmegaConf.load(default_cfg_path)
+    OmegaConf.set_struct(cfg, False)  # allow adding/overriding arbitrary keys
 
     # minimal runtime overrides
     cfg.job_id = args.job_id
@@ -85,7 +76,7 @@ def load_project_config(args):
     # turn off wandb for inspection
     if "wandb" not in cfg:
         cfg.wandb = {}
-    cfg.wandb.open = False
+    cfg.wandb["open"] = False
 
     return cfg
 
