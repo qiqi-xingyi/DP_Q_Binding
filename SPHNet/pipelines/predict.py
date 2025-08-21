@@ -138,45 +138,79 @@ def extract_hamiltonian(out, ham_key=None):
         raise RuntimeError(f"Hamiltonian not found in dict; keys={list(out.keys())}")
 
     # torch_geometric Data case
+    # torch_geometric Data case
     if TGData is not None and isinstance(out, TGData):
-        if ham_key and hasattr(out, ham_key):
-            v = getattr(out, ham_key)
-            if torch.is_tensor(v):
-                return v
-            raise RuntimeError(f"Attr at ham_key='{ham_key}' is not a tensor: {type(v)}")
-
-        # try common attribute names
-        for k in ("hami_pred", "hami", "pred", "H", "hamiltonian", "hamiltonian_pred", "fock", "fock_pred"):
-            if hasattr(out, k):
-                v = getattr(out, k)
+        # 0) if explicit key is provided
+        if ham_key is not None:
+            if ham_key in out.keys():
+                v = out[ham_key]
                 if torch.is_tensor(v):
                     return v
+                raise RuntimeError(f"Attr ham_key='{ham_key}' exists but is not a tensor: {type(v)}")
+            else:
+                raise RuntimeError(f"ham_key='{ham_key}' not found in Data keys: {list(out.keys())}")
 
-        # auto-detect a square (or batched square) tensor among attributes
+        keys = set(out.keys())
+
+        # 1) direct full Hamiltonian if available
+        if "pred_hamiltonian" in keys and torch.is_tensor(out["pred_hamiltonian"]):
+            return out["pred_hamiltonian"]
+
+        # 2) compose from predicted diagonal/non-diagonal blocks if both exist
+        has_pred_diag = "pred_hamiltonian_diagonal_blocks" in keys and torch.is_tensor(
+            out["pred_hamiltonian_diagonal_blocks"])
+        has_pred_off = "pred_hamiltonian_non_diagonal_blocks" in keys and torch.is_tensor(
+            out["pred_hamiltonian_non_diagonal_blocks"])
+        if has_pred_diag and has_pred_off:
+            d = out["pred_hamiltonian_diagonal_blocks"]
+            nd = out["pred_hamiltonian_non_diagonal_blocks"]
+            # Support [n,n] or [B,n,n]; just add elementwise (shapes must be broadcastable/equal)
+            try:
+                return d + nd
+            except Exception as e:
+                raise RuntimeError(
+                    f"Cannot compose H from predicted blocks due to shape mismatch: d={tuple(d.shape)}, nd={tuple(nd.shape)}; {e}")
+
+        # 3) try common names (pred_* first)
+        for k in ("hami_pred", "hamiltonian_pred", "fock_pred", "pred", "H"):
+            if k in keys and torch.is_tensor(out[k]):
+                return out[k]
+
+        # 4) fallback: scan all tensor fields for a (batched) square matrix
         candidates = []
-        # iterate over tensor attrs of TGData (avoid private attrs)
-        for k, v in out.__dict__.items():
-            if k.startswith("_"):
-                continue
+        tensor_field_names = []
+        for k in out.keys():
+            v = out[k]
             if torch.is_tensor(v):
+                tensor_field_names.append(k)
                 if v.ndim == 2 and v.shape[0] == v.shape[1]:
                     candidates.append((k, v))
                 elif v.ndim == 3 and v.shape[-1] == v.shape[-2]:
                     candidates.append((k, v))
 
-        if len(candidates) == 1:
+        # prefer predicted candidates if multiple exist
+        if len(candidates) > 1:
+            pred_like = [(k, v) for (k, v) in candidates if k.startswith("pred_")]
+            if len(pred_like) == 1:
+                return pred_like[0][1]
+            elif len(pred_like) > 1:
+                names = [k for k, _ in pred_like]
+                raise RuntimeError(
+                    f"Multiple predicted square-matrix candidates in Data: {names}. "
+                    f"Pass --ham_key to choose one."
+                )
+            else:
+                names = [k for k, _ in candidates]
+                raise RuntimeError(
+                    f"Multiple square-matrix candidates in Data: {names}. "
+                    f"Pass --ham_key to choose one."
+                )
+        elif len(candidates) == 1:
             return candidates[0][1]
-        elif len(candidates) > 1:
-            names = [k for k, _ in candidates]
-            raise RuntimeError(
-                f"Multiple square-matrix candidates found in torch_geometric.Data: {names}. "
-                f"Please specify --ham_key to disambiguate."
-            )
         else:
-            tensor_names = [k for k, v in out.__dict__.items() if torch.is_tensor(v)]
             raise RuntimeError(
-                "No square-matrix-like tensor found in torch_geometric.Data. "
-                f"Tensor attrs: {tensor_names}"
+                "No square-matrix-like tensor found in Data. "
+                f"Tensor fields: {tensor_field_names or '[]'} | All keys: {list(out.keys())}"
             )
 
     # plain tensor
