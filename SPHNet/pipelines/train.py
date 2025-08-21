@@ -22,6 +22,10 @@ import random
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+import os
+os.environ["WANDB_DISABLED"] = "true"
+os.environ["WANDB_SILENT"] = "true"
+
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
 # Add src in root folder
 cur_dir = os.path.dirname(os.path.abspath(__file__))
