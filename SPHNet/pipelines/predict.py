@@ -4,6 +4,9 @@
 # @Email : yzhan135@kent.edu
 # @File:predict.py
 
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
 import glob
@@ -43,17 +46,67 @@ def parse_args():
     return p.parse_args()
 
 
+def ensure_runtime_defaults(cfg):
+    """Fill missing keys the model code expects, with safe defaults for inference."""
+    OmegaConf.set_struct(cfg, False)
+
+    # train/infer toggles expected by src/models/model.py and module.py
+    defaults_bool = {
+        "enable_hami": True,                 # We want Hamiltonian prediction
+        "enable_energy": False,
+        "enable_forces": False,
+        "enable_symmetry": False,
+        "enable_energy_hami_error": False,
+        "enable_hami_orbital_energy": False,
+    }
+    for k, v in defaults_bool.items():
+        if k not in cfg:
+            cfg[k] = v
+
+    # loss weights (unused at predict-time but accessed by model)
+    defaults_float = {
+        "energy_weight": 0.0,
+        "forces_weight": 0.0,
+        "hami_weight": 1.0,
+        "orbital_energy_weight": 0.0,
+    }
+    for k, v in defaults_float.items():
+        if k not in cfg:
+            cfg[k] = v
+
+    # loss names (model may read them even at predict-time)
+    if "hami_train_loss" not in cfg:
+        cfg["hami_train_loss"] = "maemse"
+    if "hami_val_loss" not in cfg:
+        cfg["hami_val_loss"] = "mae"
+
+    # plumbing
+    if "precision" not in cfg:
+        cfg["precision"] = "32"
+    if "num_sanity_val_steps" not in cfg:
+        cfg["num_sanity_val_steps"] = 0
+    if "check_val_every_n_epoch" not in cfg:
+        cfg["check_val_every_n_epoch"] = 1
+
+    # make sure wandb is off
+    if "wandb" not in cfg:
+        cfg["wandb"] = {}
+    cfg.wandb["open"] = False
+
+    # dataloader workers may be set by caller; keep whatever is present
+
+
 def load_project_config(args):
     """
-    Load config/config.yaml as-is (Hydra-style), make it non-struct, then override needed fields.
-    Do NOT merge with a structured schema to avoid 'defaults' key conflicts.
+    Load config/config.yaml as-is (Hydra-style), make it non-struct, then override needed fields
+    without merging with a strict schema (to avoid 'defaults' conflicts).
     """
     default_cfg_path = os.path.join(repo_root, "config", "config.yaml")
     if not os.path.isfile(default_cfg_path):
         raise FileNotFoundError(f"Cannot find default config at {default_cfg_path}")
 
     cfg = OmegaConf.load(default_cfg_path)
-    OmegaConf.set_struct(cfg, False)  # allow adding/overriding arbitrary keys
+    OmegaConf.set_struct(cfg, False)
 
     # minimal runtime overrides
     cfg.job_id = args.job_id
@@ -68,16 +121,8 @@ def load_project_config(args):
     cfg.dataloader_num_workers = args.num_workers
     cfg.ngpus = 1
     cfg.num_nodes = 1
-    if not hasattr(cfg, "precision"):
-        cfg.precision = "32"
-    cfg.num_sanity_val_steps = 0
-    cfg.check_val_every_n_epoch = 1
 
-    # turn off wandb for inspection
-    if "wandb" not in cfg:
-        cfg.wandb = {}
-    cfg.wandb["open"] = False
-
+    ensure_runtime_defaults(cfg)
     return cfg
 
 
@@ -91,10 +136,11 @@ def pretty_print_tensor(name, t, print_values=False, max_print=10):
     print(desc)
     if print_values:
         numel = t_cpu.numel()
+        # Print only small 1D/2D tensors
         if t_cpu.ndim <= 2 and t_cpu.shape[0] <= max_print and (t_cpu.ndim == 1 or t_cpu.shape[-1] <= max_print) and numel <= max_print * max_print:
             print(t_cpu)
         else:
-            print("  (values suppressed; set --print_values for small tensors only)")
+            print("  (values suppressed; enable --print_values for small tensors only)")
 
 
 def debug_print_output(idx, out, print_values=False):
@@ -133,7 +179,7 @@ def main():
     args = parse_args()
     cfg = load_project_config(args)
 
-    # resolve checkpoint path
+    # checkpoint to use
     if args.ckpt is not None:
         ckpt_path = args.ckpt
     else:
@@ -163,7 +209,7 @@ def main():
         enable_checkpointing=False,
         enable_progress_bar=True,
         num_sanity_val_steps=0,
-        precision=cfg.precision,
+        precision=str(cfg.precision),
     )
 
     # run predict
@@ -187,5 +233,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
