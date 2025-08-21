@@ -23,7 +23,6 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 
-
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
 # Add src in root folder
 cur_dir = os.path.dirname(os.path.abspath(__file__))
@@ -111,7 +110,7 @@ def main(config):
     @rank_zero_only
     def log_code():
         if config.wandb.open:
-            wandb.login(key=config.wandb.wandb_api_key, relogin=True)
+            wandb.login(key="d57ad2ef85ad749b6a2d5c79c8a21a750da721a2", relogin=True)
             wandb_logger.experiment # runs wandb.init, so then code can be logged next
             wandb.run.log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".yaml"))
     log_code()
