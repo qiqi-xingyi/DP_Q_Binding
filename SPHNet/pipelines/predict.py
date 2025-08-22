@@ -7,236 +7,250 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import sys
-import glob
 import argparse
+from pathlib import Path
+from typing import List, Dict, Any
 
 import torch
+import numpy as np
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 
-# repo root
-cur_dir = os.path.dirname(os.path.abspath(__file__))
-repo_root = os.path.join(cur_dir, "..")
-sys.path.append(repo_root)
+# Add project root/src to PYTHONPATH
+CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(CUR_DIR, ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
 
-from src.training.data import DataModule
-from src.training.module import LNNP
-from src.training.logger import get_latest_ckpt
-
-try:
-    from torch_geometric.data import Data as TGData
-except Exception:
-    TGData = None
+from src.training.module import LNNP  # noqa: E402
+from src.training.data import DataModule  # noqa: E402
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description="Inspect-only predictor: print model prediction fields (no saving).")
-    p.add_argument("--ckpt", type=str, default=None, help="Path to checkpoint. If omitted, use latest under outputs/<job_id>/")
-    p.add_argument("--job_id", type=str, default="train_quick", help="Folder under outputs/ to read ckpt from if --ckpt not set")
-    p.add_argument("--dataset_path", type=str, required=True, help="Path to dataset (e.g., ./example_data/data.mdb or .lmdb)")
-    p.add_argument("--data_name", type=str, default="custom", help="Dataset split name (custom/qh9_stable_iid/...)")
-    p.add_argument("--basis", type=str, default="def2-svp", help="Basis string (e.g., def2-svp)")
-    p.add_argument("--num_workers", type=int, default=0, help="predict dataloader workers (0 avoids fork issues)")
-    p.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Accelerator hint")
-    p.add_argument("--inspect_limit", type=int, default=3, help="How many prediction items to print")
-    p.add_argument("--print_values", action="store_true", help="Also print values for small (<=10x10) tensors")
-    p.add_argument("--seed", type=int, default=123, help="Random seed")
-    return p.parse_args()
+# ----------------------------
+# Helpers
+# ----------------------------
+def _infer_job_id_from_ckpt(ckpt_path: str) -> str:
+    """Infer job_id from a checkpoint path. E.g., outputs/<job_id>/<file>.ckpt -> <job_id>."""
+    p = Path(ckpt_path).resolve()
+    # ckpt is outputs/<job_id>/<file>.ckpt
+    return p.parent.name
 
 
-def ensure_runtime_defaults(cfg):
-    OmegaConf.set_struct(cfg, False)
-    # Heads/toggles the model code may access at predict time
-    for k, v in {
-        "enable_hami": True,
-        "enable_energy": False,
-        "enable_forces": False,
-        "enable_symmetry": False,
-        "enable_energy_hami_error": False,
-        "enable_hami_orbital_energy": False,
-    }.items():
-        cfg.setdefault(k, v)
-    for k, v in {
-        "energy_weight": 0.0,
-        "forces_weight": 0.0,
-        "hami_weight": 1.0,
-        "orbital_energy_weight": 0.0,
-    }.items():
-        cfg.setdefault(k, v)
-    cfg.setdefault("hami_train_loss", "maemse")
-    cfg.setdefault("hami_val_loss", "mae")
-    cfg.setdefault("precision", "32")
-    cfg.setdefault("num_sanity_val_steps", 0)
-    cfg.setdefault("check_val_every_n_epoch", 1)
-    if "wandb" not in cfg:
-        cfg["wandb"] = {}
-    cfg.wandb["open"] = False
+def _load_cfg_from_job(job_id: str) -> Any:
+    """Load the full training config saved by training at outputs/<job_id>/config.yaml."""
+    cfg_path = Path(ROOT_DIR) / "outputs" / job_id / "config.yaml"
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Cannot find config file: {cfg_path}")
+    return OmegaConf.load(str(cfg_path))
 
 
-def ensure_model_defaults(cfg):
-    """Provide safe defaults for model & hami head if missing (values mirror your train logs)."""
-    OmegaConf.set_struct(cfg, False)
-    if "model" not in cfg or cfg.model is None:
-        cfg.model = {
-            "order": 4,
-            "embedding_dimension": 128,
-            "bottle_hidden_size": 32,
-            "max_radius": 15,
-            "num_nodes": 10,
-            "radius_embed_dim": 16,
-            "use_equi_norm": True,
-            "short_cutoff_upper": 5,
-            "long_cutoff_upper": 15,
-            "num_scale_atom_layers": 4,
-            "num_long_range_layers": 4,
-        }
-    if "hami_model" not in cfg or cfg.hami_model is None:
-        cfg.hami_model = {
-            "name": "HamiHead_sphnet",
-            "irreps_edge_embedding": None,
-            "num_layer": 2,
-            "max_radius_cutoff": 30,
-            "radius_embed_dim": 16,
-            "bottle_hidden_size": 32,
-        }
-    # Sparse TP flags also showed up in your runs
-    cfg.setdefault("use_sparse_tp", True)
-    cfg.setdefault("sparsity", 0.7)
+def _override_runtime_cfg(cfg: Any,
+                          dataset_path: str = None,
+                          data_name: str = None,
+                          basis: str = None,
+                          num_workers: int = None,
+                          batch_size: int = None) -> Any:
+    """Apply light runtime overrides without breaking the training config structure."""
+    # Basic safety: disable training-time things that are irrelevant for inference
+    cfg.ngpus = 1 if "ngpus" not in cfg or cfg.ngpus is None else cfg.ngpus
+    cfg.num_sanity_val_steps = 0
+    cfg.check_val_every_n_epoch = 1 if "check_val_every_n_epoch" not in cfg else cfg.check_val_every_n_epoch
+    cfg.val_check_interval = None
 
-
-def load_project_config(args):
-    """Load config/config.yaml, then override minimal fields and ensure defaults."""
-    default_cfg_path = os.path.join(repo_root, "config", "config.yaml")
-    if not os.path.isfile(default_cfg_path):
-        raise FileNotFoundError(f"Cannot find default config at {default_cfg_path}")
-
-    cfg = OmegaConf.load(default_cfg_path)
-    OmegaConf.set_struct(cfg, False)
-
-    # Minimal runtime overrides
-    cfg.job_id = args.job_id
-    cfg.log_dir = os.path.join("outputs", cfg.job_id)
-    cfg.data_name = args.data_name
-    cfg.basis = args.basis
-    cfg.dataset_path = args.dataset_path
-    if getattr(cfg, "inference_batch_size", None) is None:
+    # Ensure deterministic small batch for inference unless overridden
+    if batch_size is not None:
+        cfg.inference_batch_size = batch_size
+        cfg.batch_size = batch_size
+    elif getattr(cfg, "inference_batch_size", None) is None:
         cfg.inference_batch_size = 1
-    cfg.dataloader_num_workers = args.num_workers
-    cfg.ngpus = 1
-    cfg.num_nodes = 1
 
-    ensure_runtime_defaults(cfg)
-    ensure_model_defaults(cfg)
+    # Data related overrides
+    if dataset_path is not None:
+        cfg.dataset_path = dataset_path
+    if data_name is not None:
+        cfg.data_name = data_name
+    if basis is not None:
+        cfg.basis = basis
+    if num_workers is not None:
+        cfg.dataloader_num_workers = int(num_workers)
+
+    # Logging dir remains the same job folder
+    cfg.log_dir = os.path.join(cfg.log_dir, cfg.job_id)
+
     return cfg
 
 
-def pretty_print_tensor(name, t, print_values=False, max_print=10):
-    t_cpu = t.detach().cpu()
-    desc = f"- {name}: Tensor shape={tuple(t_cpu.shape)}, dtype={t_cpu.dtype}"
-    try:
-        desc += f", min={float(t_cpu.min()):.6g}, max={float(t_cpu.max()):.6g}"
-    except Exception:
-        pass
-    print(desc)
-    if print_values:
-        numel = t_cpu.numel()
-        if t_cpu.ndim <= 2 and t_cpu.shape[0] <= max_print and (t_cpu.ndim == 1 or t_cpu.shape[-1] <= max_print) and numel <= max_print * max_print:
-            print(t_cpu)
-        else:
-            print("  (values suppressed; enable --print_values for small tensors only)")
+def _ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
 
 
-def debug_print_output(idx, out, print_values=False):
-    print(f"\n[inspect] >>> Item #{idx}")
-    if isinstance(out, (list, tuple)) and len(out) == 1:
-        out = out[0]
+def _to_numpy(x: torch.Tensor) -> np.ndarray:
+    return x.detach().cpu().numpy()
 
-    if torch.is_tensor(out):
-        pretty_print_tensor("tensor", out, print_values=print_values)
-        return
 
-    if isinstance(out, dict):
-        print(f"[inspect] type=dict, keys={list(out.keys())}")
-        for k, v in out.items():
-            if torch.is_tensor(v):
-                pretty_print_tensor(k, v, print_values=print_values)
+def _print_batch_summary(i: int, batch) -> None:
+    print(f"\n[inspect] Batch {i} keys: {list(batch.keys())}")
+    keys_to_check = [
+        "pred_hamiltonian_diagonal_blocks",
+        "pred_hamiltonian_non_diagonal_blocks",
+        "diag_mask",
+        "non_diag_mask",
+        "diag_hamiltonian",
+        "non_diag_hamiltonian",
+        "hamiltonian",         # GT full H (list) if exists
+        "pred_hamiltonian"     # Pred full H (list) after build
+    ]
+    for k in keys_to_check:
+        if hasattr(batch, k):
+            v = getattr(batch, k)
+            if isinstance(v, torch.Tensor):
+                print(f"  {k}: tensor shape={tuple(v.shape)} dtype={v.dtype} device={v.device}")
+            elif isinstance(v, (list, tuple)) and len(v) > 0 and isinstance(v[0], torch.Tensor):
+                print(f"  {k}: list(len={len(v)}) first shape={tuple(v[0].shape)}")
             else:
-                print(f"- {k}: {type(v)}")
-        return
-
-    if TGData is not None and isinstance(out, TGData):
-        ks = list(out.keys())
-        print(f"[inspect] type=torch_geometric.data.Data, keys={ks}")
-        for k in ks:
-            v = out[k]
-            if torch.is_tensor(v):
-                pretty_print_tensor(k, v, print_values=print_values)
-            else:
-                print(f"- {k}: {type(v)}")
-        return
-
-    print(f"[inspect] Unsupported output type: {type(out)}")
+                print(f"  {k}: type={type(v)}")
 
 
-def main():
+def _save_per_molecule_matrices(save_dir: Path,
+                                prefix: str,
+                                matrices: List[torch.Tensor]) -> None:
+    """Save a list of per-molecule square matrices as <prefix>_<i>.npy."""
+    for i, mat in enumerate(matrices):
+        npy_path = save_dir / f"{prefix}_{i}.npy"
+        np.save(str(npy_path), _to_numpy(mat))
+
+
+# ----------------------------
+# Main
+# ----------------------------
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="SPHNet prediction script (assemble full Hamiltonian and save).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--ckpt", type=str, default=None,
+                        help="Path to a checkpoint. If not provided, will use the latest ckpt in outputs/<job_id>/")
+    parser.add_argument("--job_id", type=str, default=None,
+                        help="Job id used during training. Required if --ckpt is not given.")
+    parser.add_argument("--dataset_path", type=str, default=None,
+                        help="Override dataset path for inference.")
+    parser.add_argument("--data_name", type=str, default=None,
+                        help="Override data name (e.g., custom, qh9_stable_iid).")
+    parser.add_argument("--basis", type=str, default=None,
+                        help="Override basis (e.g., def2-svp).")
+    parser.add_argument("--num_workers", type=int, default=None,
+                        help="Number of workers for the test dataloader.")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Batch size for inference.")
+    parser.add_argument("--inspect_limit", type=int, default=0,
+                        help="If > 0, only print summaries of the first N batches and exit (no files saved).")
+    parser.add_argument("--save_root", type=str, default=None,
+                        help="Override output directory to save predictions. Default: outputs/<job_id>/predictions")
+    return parser.parse_args()
+
+
+def main() -> None:
     args = parse_args()
-    cfg = load_project_config(args)
 
-    # Resolve checkpoint
-    if args.ckpt is not None:
-        ckpt_path = args.ckpt
-    else:
-        ckpt_path = get_latest_ckpt(cfg.log_dir)
-        if ckpt_path is None:
-            ckpts = glob.glob(os.path.join(cfg.log_dir, "*.ckpt"))
-            ckpt_path = max(ckpts, key=os.path.getctime) if ckpts else None
-    if ckpt_path is None:
-        raise FileNotFoundError(f"No checkpoint found. Pass --ckpt or ensure *.ckpt exists under {cfg.log_dir}")
+    # Resolve job_id and ckpt
+    if args.ckpt is None and args.job_id is None:
+        raise ValueError("Either --ckpt or --job_id must be provided.")
+    if args.job_id is None and args.ckpt is not None:
+        args.job_id = _infer_job_id_from_ckpt(args.ckpt)
 
-    print(f"[info] Using ckpt: {ckpt_path}")
-    print(f"[info] Using dataset: {cfg.dataset_path} ({cfg.data_name}, basis={cfg.basis})")
-    print(f"[info] Inspecting first {args.inspect_limit} items (no files will be saved)")
+    # Load training config that was saved by train.py
+    cfg = _load_cfg_from_job(args.job_id)
 
-    pl.seed_everything(args.seed, workers=True)
-
-    data = DataModule(cfg)
-    model = LNNP(cfg)
-
-    accelerator = "gpu" if (args.device == "cuda" and torch.cuda.is_available()) else "cpu"
-    trainer = pl.Trainer(
-        devices=1,
-        accelerator=accelerator,
-        logger=False,
-        enable_checkpointing=False,
-        enable_progress_bar=True,
-        num_sanity_val_steps=0,
-        precision=str(cfg.precision),
+    # Merge runtime overrides
+    cfg = _override_runtime_cfg(
+        cfg,
+        dataset_path=args.dataset_path,
+        data_name=args.data_name,
+        basis=args.basis,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size,
     )
 
-    preds = trainer.predict(model, datamodule=data, ckpt_path=ckpt_path)
+    # Find ckpt if not specified
+    if args.ckpt is None:
+        job_dir = Path(ROOT_DIR) / "outputs" / args.job_id
+        ckpts = sorted(job_dir.glob("*.ckpt"), key=os.path.getmtime)
+        if not ckpts:
+            raise FileNotFoundError(f"No .ckpt files found in {job_dir}")
+        args.ckpt = str(ckpts[-1])
 
-    printed = 0
-    for batch_out in preds:
-        items = batch_out if isinstance(batch_out, (list, tuple)) else [batch_out]
-        for o in items:
-            if printed >= args.inspect_limit:
+    # Where to save predictions
+    save_root = Path(args.save_root) if args.save_root else (Path(ROOT_DIR) / "outputs" / args.job_id / "predictions")
+    if args.inspect_limit <= 0:
+        _ensure_dir(save_root)
+
+    print(f"[info] Using ckpt: {args.ckpt}")
+    print(f"[info] Using dataset: {cfg.dataset_path} ({cfg.data_name}, basis={cfg.basis})")
+    if args.inspect_limit > 0:
+        print(f"[info] Inspecting first {args.inspect_limit} batches (no files will be saved)")
+    else:
+        print(f"[info] Predictions will be saved to: {save_root}")
+
+    # Seed and precision settings
+    pl.seed_everything(int(cfg.seed) if "seed" in cfg else 123, workers=True)
+    if str(cfg.precision) == "32":
+        torch.set_float32_matmul_precision("high")
+
+    # DataModule (use test split)
+    dm = DataModule(cfg)
+    dm.setup(stage="test")
+    test_loader = dm.test_dataloader()
+
+    # Load model
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = LNNP.load_from_checkpoint(args.ckpt, hparams=cfg, map_location=device)
+    model.eval().to(device)
+
+    # Inference loop
+    with torch.no_grad():
+        for b_idx, batch in enumerate(test_loader):
+            if args.inspect_limit > 0 and b_idx >= args.inspect_limit:
                 break
-            debug_print_output(printed, o, print_values=args.print_values)
-            printed += 1
-        if printed >= args.inspect_limit:
-            break
 
-    if printed == 0:
-        print("[warn] No prediction items produced by trainer.predict().")
+            batch = batch.to(device)
+            # Forward pass: predictions are written back into `batch`
+            batch = model(batch)
+
+            # Assemble full Hamiltonian matrices into `batch['pred_hamiltonian']`
+            # This populates a per-molecule list of square tensors.
+            model.hami_model.build_final_matrix(batch)
+
+            if args.inspect_limit > 0:
+                _print_batch_summary(b_idx, batch)
+                continue
+
+            # Save predictions
+            # `pred_hamiltonian` is expected to be a list of per-molecule tensors
+            if hasattr(batch, "pred_hamiltonian"):
+                pred_list = batch["pred_hamiltonian"]
+                _save_per_molecule_matrices(save_root, f"pred_H_batch{b_idx}", pred_list)
+            else:
+                # Fallback: save block outputs if full matrix is not present (shouldn't happen if build_final_matrix ran)
+                for k in ["pred_hamiltonian_diagonal_blocks", "pred_hamiltonian_non_diagonal_blocks"]:
+                    if hasattr(batch, k):
+                        np.save(str(save_root / f"{k}_batch{b_idx}.npy"), _to_numpy(getattr(batch, k)))
+
+            # Optionally save ground-truth matrices if they exist in the dataset
+            if hasattr(batch, "hamiltonian"):
+                gt_list = batch["hamiltonian"]
+                _save_per_molecule_matrices(save_root, f"gt_H_batch{b_idx}", gt_list)
+
+    if args.inspect_limit > 0:
+        print("\n[done] Inspect mode finished.")
+    else:
+        print("\n[done] Predictions saved.")
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
