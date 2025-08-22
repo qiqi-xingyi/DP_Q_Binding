@@ -220,7 +220,8 @@ def main() -> None:
 
             # Assemble full Hamiltonian matrices into `batch['pred_hamiltonian']`
             # This populates a per-molecule list of square tensors.
-            model.hami_model.build_final_matrix(batch)
+            model.model.hami_model.build_final_matrix(batch)
+
 
             if args.inspect_limit > 0:
                 _print_batch_summary(b_idx, batch)
