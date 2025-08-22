@@ -7,6 +7,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
 import glob
@@ -47,60 +50,67 @@ def parse_args():
 
 
 def ensure_runtime_defaults(cfg):
-    """Fill missing keys the model code expects, with safe defaults for inference."""
     OmegaConf.set_struct(cfg, False)
-
-    # train/infer toggles expected by src/models/model.py and module.py
-    defaults_bool = {
-        "enable_hami": True,                 # We want Hamiltonian prediction
+    # Heads/toggles the model code may access at predict time
+    for k, v in {
+        "enable_hami": True,
         "enable_energy": False,
         "enable_forces": False,
         "enable_symmetry": False,
         "enable_energy_hami_error": False,
         "enable_hami_orbital_energy": False,
-    }
-    for k, v in defaults_bool.items():
-        if k not in cfg:
-            cfg[k] = v
-
-    # loss weights (unused at predict-time but accessed by model)
-    defaults_float = {
+    }.items():
+        cfg.setdefault(k, v)
+    for k, v in {
         "energy_weight": 0.0,
         "forces_weight": 0.0,
         "hami_weight": 1.0,
         "orbital_energy_weight": 0.0,
-    }
-    for k, v in defaults_float.items():
-        if k not in cfg:
-            cfg[k] = v
-
-    # loss names (model may read them even at predict-time)
-    if "hami_train_loss" not in cfg:
-        cfg["hami_train_loss"] = "maemse"
-    if "hami_val_loss" not in cfg:
-        cfg["hami_val_loss"] = "mae"
-
-    # plumbing
-    if "precision" not in cfg:
-        cfg["precision"] = "32"
-    if "num_sanity_val_steps" not in cfg:
-        cfg["num_sanity_val_steps"] = 0
-    if "check_val_every_n_epoch" not in cfg:
-        cfg["check_val_every_n_epoch"] = 1
-
-    # make sure wandb is off
+    }.items():
+        cfg.setdefault(k, v)
+    cfg.setdefault("hami_train_loss", "maemse")
+    cfg.setdefault("hami_val_loss", "mae")
+    cfg.setdefault("precision", "32")
+    cfg.setdefault("num_sanity_val_steps", 0)
+    cfg.setdefault("check_val_every_n_epoch", 1)
     if "wandb" not in cfg:
         cfg["wandb"] = {}
     cfg.wandb["open"] = False
 
-    # dataloader workers may be set by caller; keep whatever is present
+
+def ensure_model_defaults(cfg):
+    """Provide safe defaults for model & hami head if missing (values mirror your train logs)."""
+    OmegaConf.set_struct(cfg, False)
+    if "model" not in cfg or cfg.model is None:
+        cfg.model = {
+            "order": 4,
+            "embedding_dimension": 128,
+            "bottle_hidden_size": 32,
+            "max_radius": 15,
+            "num_nodes": 10,
+            "radius_embed_dim": 16,
+            "use_equi_norm": True,
+            "short_cutoff_upper": 5,
+            "long_cutoff_upper": 15,
+            "num_scale_atom_layers": 4,
+            "num_long_range_layers": 4,
+        }
+    if "hami_model" not in cfg or cfg.hami_model is None:
+        cfg.hami_model = {
+            "name": "HamiHead_sphnet",
+            "irreps_edge_embedding": None,
+            "num_layer": 2,
+            "max_radius_cutoff": 30,
+            "radius_embed_dim": 16,
+            "bottle_hidden_size": 32,
+        }
+    # Sparse TP flags also showed up in your runs
+    cfg.setdefault("use_sparse_tp", True)
+    cfg.setdefault("sparsity", 0.7)
 
 
 def load_project_config(args):
-    """
-    Load config/config.yaml as-is (Hydra-style), make it non-struct, then override needed fields
-    without merging with a strict schema (to avoid 'defaults' conflicts).
-    """
+    """Load config/config.yaml, then override minimal fields and ensure defaults."""
     default_cfg_path = os.path.join(repo_root, "config", "config.yaml")
     if not os.path.isfile(default_cfg_path):
         raise FileNotFoundError(f"Cannot find default config at {default_cfg_path}")
@@ -108,14 +118,12 @@ def load_project_config(args):
     cfg = OmegaConf.load(default_cfg_path)
     OmegaConf.set_struct(cfg, False)
 
-    # minimal runtime overrides
+    # Minimal runtime overrides
     cfg.job_id = args.job_id
     cfg.log_dir = os.path.join("outputs", cfg.job_id)
     cfg.data_name = args.data_name
     cfg.basis = args.basis
     cfg.dataset_path = args.dataset_path
-
-    # inference knobs
     if getattr(cfg, "inference_batch_size", None) is None:
         cfg.inference_batch_size = 1
     cfg.dataloader_num_workers = args.num_workers
@@ -123,6 +131,7 @@ def load_project_config(args):
     cfg.num_nodes = 1
 
     ensure_runtime_defaults(cfg)
+    ensure_model_defaults(cfg)
     return cfg
 
 
@@ -136,7 +145,6 @@ def pretty_print_tensor(name, t, print_values=False, max_print=10):
     print(desc)
     if print_values:
         numel = t_cpu.numel()
-        # Print only small 1D/2D tensors
         if t_cpu.ndim <= 2 and t_cpu.shape[0] <= max_print and (t_cpu.ndim == 1 or t_cpu.shape[-1] <= max_print) and numel <= max_print * max_print:
             print(t_cpu)
         else:
@@ -179,7 +187,7 @@ def main():
     args = parse_args()
     cfg = load_project_config(args)
 
-    # checkpoint to use
+    # Resolve checkpoint
     if args.ckpt is not None:
         ckpt_path = args.ckpt
     else:
@@ -196,11 +204,9 @@ def main():
 
     pl.seed_everything(args.seed, workers=True)
 
-    # datamodule & model
     data = DataModule(cfg)
     model = LNNP(cfg)
 
-    # bare trainer for prediction
     accelerator = "gpu" if (args.device == "cuda" and torch.cuda.is_available()) else "cpu"
     trainer = pl.Trainer(
         devices=1,
@@ -212,10 +218,8 @@ def main():
         precision=str(cfg.precision),
     )
 
-    # run predict
     preds = trainer.predict(model, datamodule=data, ckpt_path=ckpt_path)
 
-    # print first N items
     printed = 0
     for batch_out in preds:
         items = batch_out if isinstance(batch_out, (list, tuple)) else [batch_out]
