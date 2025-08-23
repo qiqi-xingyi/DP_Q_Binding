@@ -452,6 +452,7 @@ def main():
     parser.add_argument("--data_name", type=str, required=True, help="Name of the dataset")
     parser.add_argument("--output_path", type=str, required=True, help="Path to the generated LMDB file")
     parser.add_argument("--input_path", type=str, required=True, help="Path to the original dataset file")
+    parser.add_argument("--version", type=str, default="300k", choices=["100k", "300k"], help="QH9Dynamic version to use")
 
     # Parse arguments
     args = parser.parse_args()
@@ -466,10 +467,14 @@ def main():
         dataset = QH9Stable(root=args.input_path, split='random')
     elif args.data_name.split('_')[1] == 'stable' and args.data_name.split('_')[2] == 'ood':
         dataset = QH9Stable(root=args.input_path, split='size_ood')
+    # elif args.data_name.split('_')[1] == 'dynamic' and args.data_name.split('_')[2] == 'geometry':
+    #     dataset = QH9Dynamic(root=args.input_path, split='geometry', version='100k')
+    # elif args.data_name.split('_')[1] == 'dynamic' and args.data_name.split('_')[2] == 'mol':
+    #     dataset = QH9Dynamic(root=args.input_path, split='mol', version='100k')
     elif args.data_name.split('_')[1] == 'dynamic' and args.data_name.split('_')[2] == 'geometry':
-        dataset = QH9Dynamic(root=args.input_path, split='geometry', version='100k')
+        dataset = QH9Dynamic(root=args.input_path, split='geometry', version=args.version)
     elif args.data_name.split('_')[1] == 'dynamic' and args.data_name.split('_')[2] == 'mol':
-        dataset = QH9Dynamic(root=args.input_path, split='mol', version='100k')
+        dataset = QH9Dynamic(root=args.input_path, split='mol', version=args.version)
 
     # preprocess dataset
     data = []
