@@ -4,6 +4,7 @@ This script will finally output a mdb format file.
 You can modify the data reading part according to your data format.
 '''
 
+
 import torch
 import os
 import os.path as osp
