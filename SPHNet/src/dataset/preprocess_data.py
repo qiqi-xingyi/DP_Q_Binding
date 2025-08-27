@@ -229,14 +229,22 @@ class QH9Dynamic(InMemoryDataset):
 
 
     def download(self):
-        try:
-            print(f"Downloading the QH9Dynamic_{self.version} dataset through {self.url}")
-            gdown.download(self.url[self.version], output=self.raw_paths[0], fuzzy=True)
-        except:
-            print(f"Downloading failed! Please download the QH9Dynamic_{self.version} dataset to {self.raw_paths[0]} "
-                  f"through {self.url[self.version]}")
-            print(f"Or you can try to download the zip file through {GoogleDriveLink}")
-            raise FileNotFoundError(f"QH9Dynamic_{self.version} needs to be downloaded.")
+        # try:
+        #     print(f"Downloading the QH9Dynamic_{self.version} dataset through {self.url}")
+        #     gdown.download(self.url[self.version], output=self.raw_paths[0], fuzzy=True)
+        # except:
+        #     print(f"Downloading failed! Please download the QH9Dynamic_{self.version} dataset to {self.raw_paths[0]} "
+        #           f"through {self.url[self.version]}")
+        #     print(f"Or you can try to download the zip file through {GoogleDriveLink}")
+        #     raise FileNotFoundError(f"QH9Dynamic_{self.version} needs to be downloaded.")
+        raw_path = os.path.join(self.root, "raw", self.raw_file_names[0])
+        if os.path.exists(raw_path):
+            print(f"[QH9Dynamic-{self.version}] Found existing raw file: {raw_path}. Skip downloading.")
+            return
+        raise FileNotFoundError(
+            f"[QH9Dynamic-{self.version}] Raw file not found: {raw_path}\n"
+            f"Please place '{self.raw_file_names[0]}' at this path, then rerun."
+        )
 
 
     @property
