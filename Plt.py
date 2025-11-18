@@ -3,29 +3,21 @@
 # @Author : Yuqi Zhang
 # @Email : yzhan135@kent.edu
 # @File:Plt.py
-import os
+
 import re
 from pathlib import Path
-
 import numpy as np
 import matplotlib.pyplot as plt
 
 
-# =======================================================
-# CONFIG — YOU ONLY NEED TO CHANGE THIS PATH
-# =======================================================
-PREDICTIONS_FILE = r"SPHNet/outputs/train_quick/predictions/predictions.txt"
-
-# Optional: choose output directory (default: same folder + /plots/)
-OUTPUT_DIR = None
-
-# Whether to use symmetric color scale around zero
+# ================== CONFIG ==================
+PREDICTIONS_FILE = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/SPHNet/outputs/train_quick/predictions/predictions.txt"
+OUTPUT_IMAGE = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/first_matrix.png"
 SYMMETRIC_COLOR = True
+# ============================================
 
 
-def parse_predictions_file(path):
-    matrices = []
-    current_name = None
+def load_first_matrix(path):
     current_shape = None
     current_data = []
 
@@ -37,87 +29,69 @@ def parse_predictions_file(path):
             if not line:
                 continue
 
-            if line.startswith("File:"):
-                if current_name is not None and current_shape is not None and current_data:
-                    arr = np.array(current_data, dtype=float).reshape(current_shape)
-                    matrices.append((current_name, arr))
-                    current_data = []
+            # Stop at the first separator — only first matrix needed
+            if set(line) <= {"-", " "}:
+                break
 
-                current_name = line.split("File:", 1)[1].strip()
-                current_shape = None
-
-            elif line.startswith("Shape:"):
+            if line.startswith("Shape:"):
                 m = shape_pattern.search(line)
                 if m:
                     rows = int(m.group(1))
                     cols = int(m.group(2))
                     current_shape = (rows, cols)
+                continue
 
-            elif line.startswith("Data:"):
+            if line.startswith("Data:"):
                 data_part = line.split("Data:", 1)[1].strip()
                 if data_part:
-                    current_data.extend(data_part.split())
+                    for tok in data_part.split():
+                        current_data.append(float(tok))
+                continue
 
-            else:
-                current_data.extend(line.split())
+            # Additional numeric lines
+            for tok in line.split():
+                try:
+                    current_data.append(float(tok))
+                except ValueError:
+                    pass
 
-        if current_name is not None and current_shape is not None and current_data:
-            arr = np.array(current_data, dtype=float).reshape(current_shape)
-            matrices.append((current_name, arr))
+    if current_shape is None:
+        raise ValueError("No matrix shape found in file.")
 
-    return matrices
+    rows, cols = current_shape
+    arr = np.array(current_data, dtype=float).reshape((rows, cols))
+    return arr
 
 
-def plot_matrix(mat, name, out_dir, symmetric=True, dpi=300):
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    stem = Path(name).name
-    if stem.endswith(".npy"):
-        stem = stem[:-4]
-
+def plot_first_matrix(mat, output_file, symmetric=True, dpi=300):
     plt.figure(figsize=(6, 5))
 
     if symmetric:
-        vmax = np.max(np.abs(mat))
+        vmax = float(np.max(np.abs(mat)))
         vmin = -vmax
         im = plt.imshow(mat, vmin=vmin, vmax=vmax, aspect="equal")
     else:
         im = plt.imshow(mat, aspect="equal")
 
     plt.colorbar(im, fraction=0.046, pad=0.04)
-    plt.title(stem)
+    plt.title("Molecular Matrix After Quantum-Chemical Modeling")
     plt.xlabel("Column index")
     plt.ylabel("Row index")
     plt.tight_layout()
 
-    out_path = out_dir / f"{stem}.png"
+    out_path = Path(output_file)
     plt.savefig(out_path, dpi=dpi)
     plt.close()
-    print(f"Saved: {out_path}")
+    print(f"Saved first matrix heatmap to: {out_path}")
 
 
 def run():
     pred_path = Path(PREDICTIONS_FILE)
     if not pred_path.is_file():
-        raise FileNotFoundError(f"Could not find predictions file: {pred_path}")
+        raise FileNotFoundError(f"File not found: {pred_path}")
 
-    if OUTPUT_DIR is None:
-        out_dir = pred_path.parent / "plots"
-    else:
-        out_dir = Path(OUTPUT_DIR)
-
-    matrices = parse_predictions_file(pred_path)
-
-    print(f"Parsed {len(matrices)} matrices from {pred_path}")
-
-    for name, mat in matrices:
-        plot_matrix(
-            mat,
-            name=name,
-            out_dir=out_dir,
-            symmetric=SYMMETRIC_COLOR,
-        )
+    mat = load_first_matrix(pred_path)
+    plot_first_matrix(mat, OUTPUT_IMAGE, symmetric=SYMMETRIC_COLOR)
 
 
 if __name__ == "__main__":
