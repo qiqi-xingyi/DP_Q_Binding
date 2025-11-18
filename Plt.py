@@ -3,8 +3,6 @@
 # @Author : Yuqi Zhang
 # @Email : yzhan135@kent.edu
 # @File:Plt.py
-
-import argparse
 import os
 import re
 from pathlib import Path
@@ -13,10 +11,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+# =======================================================
+# CONFIG — YOU ONLY NEED TO CHANGE THIS PATH
+# =======================================================
+PREDICTIONS_FILE = r"SPHNet/outputs/train_quick/predictions/predictions.txt"
+
+# Optional: choose output directory (default: same folder + /plots/)
+OUTPUT_DIR = None
+
+# Whether to use symmetric color scale around zero
+SYMMETRIC_COLOR = True
+
+
 def parse_predictions_file(path):
-    """
-    Parse predictions.txt-like file into a list of (name, array) pairs.
-    """
     matrices = []
     current_name = None
     current_shape = None
@@ -31,10 +38,8 @@ def parse_predictions_file(path):
                 continue
 
             if line.startswith("File:"):
-                # flush previous matrix
                 if current_name is not None and current_shape is not None and current_data:
-                    arr = np.array(current_data, dtype=float)
-                    arr = arr.reshape(current_shape)
+                    arr = np.array(current_data, dtype=float).reshape(current_shape)
                     matrices.append((current_name, arr))
                     current_data = []
 
@@ -47,36 +52,26 @@ def parse_predictions_file(path):
                     rows = int(m.group(1))
                     cols = int(m.group(2))
                     current_shape = (rows, cols)
-                else:
-                    raise ValueError(f"Could not parse shape from line: {line}")
 
             elif line.startswith("Data:"):
-                # data values may start from the same line or next lines
                 data_part = line.split("Data:", 1)[1].strip()
                 if data_part:
                     current_data.extend(data_part.split())
 
             else:
-                # numeric data line
                 current_data.extend(line.split())
 
-        # flush last matrix
         if current_name is not None and current_shape is not None and current_data:
-            arr = np.array(current_data, dtype=float)
-            arr = arr.reshape(current_shape)
+            arr = np.array(current_data, dtype=float).reshape(current_shape)
             matrices.append((current_name, arr))
 
     return matrices
 
 
 def plot_matrix(mat, name, out_dir, symmetric=True, dpi=300):
-    """
-    Plot a single matrix as a heatmap and save to out_dir.
-    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # derive a clean file stem from the original name
     stem = Path(name).name
     if stem.endswith(".npy"):
         stem = stem[:-4]
@@ -85,10 +80,7 @@ def plot_matrix(mat, name, out_dir, symmetric=True, dpi=300):
 
     if symmetric:
         vmax = np.max(np.abs(mat))
-        if vmax == 0:
-            vmin, vmax = -1.0, 1.0
-        else:
-            vmin, vmax = -vmax, vmax
+        vmin = -vmax
         im = plt.imshow(mat, vmin=vmin, vmax=vmax, aspect="equal")
     else:
         im = plt.imshow(mat, aspect="equal")
@@ -105,41 +97,17 @@ def plot_matrix(mat, name, out_dir, symmetric=True, dpi=300):
     print(f"Saved: {out_path}")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Plot matrices from SPHNet predictions.txt as heatmaps."
-    )
-    parser.add_argument(
-        "predictions",
-        type=str,
-        help="Path to predictions.txt (e.g., SPHNet/outputs/train_quick/predictions/predictions.txt)",
-    )
-    parser.add_argument(
-        "--out-dir",
-        type=str,
-        default=None,
-        help="Directory to save plots. Default: <predictions_dir>/plots",
-    )
-    parser.add_argument(
-        "--no-symmetric",
-        action="store_true",
-        help="Disable symmetric color scale around zero.",
-    )
-    args = parser.parse_args()
-
-    pred_path = Path(args.predictions)
+def run():
+    pred_path = Path(PREDICTIONS_FILE)
     if not pred_path.is_file():
-        raise FileNotFoundError(f"File not found: {pred_path}")
+        raise FileNotFoundError(f"Could not find predictions file: {pred_path}")
 
-    if args.out_dir is None:
+    if OUTPUT_DIR is None:
         out_dir = pred_path.parent / "plots"
     else:
-        out_dir = Path(args.out_dir)
+        out_dir = Path(OUTPUT_DIR)
 
     matrices = parse_predictions_file(pred_path)
-    if not matrices:
-        print("No matrices parsed from file.")
-        return
 
     print(f"Parsed {len(matrices)} matrices from {pred_path}")
 
@@ -148,9 +116,9 @@ def main():
             mat,
             name=name,
             out_dir=out_dir,
-            symmetric=not args.no_symmetric,
+            symmetric=SYMMETRIC_COLOR,
         )
 
 
 if __name__ == "__main__":
-    main()
+    run()
