@@ -124,7 +124,7 @@ def run():
 
     for idx, mat in enumerate(matrices):
         out_file = out_dir / f"matrix_{idx:04d}.png"
-        title = f"Molecular Matrix (Neon Quantum Style) #{idx}"
+        title = f"Molecular Matrix After Quantum-Chemical Modeling"
         plot_matrix(mat, out_file, symmetric=SYMMETRIC_COLOR, title=title)
 
 
