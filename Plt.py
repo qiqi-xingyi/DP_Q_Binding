@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 PREDICTIONS_FILE = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/SPHNet/outputs/train_quick/predictions/predictions.txt"
 
 # All heatmaps will be saved here (directory will be auto-created)
-OUTPUT_DIR = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/SPHNet/outputs/train_quick/predictions/heatmaps"
+OUTPUT_DIR = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/heatmaps"
 
 SYMMETRIC_COLOR = True
 # ============================================
