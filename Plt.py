@@ -20,16 +20,18 @@ SYMMETRIC_COLOR = True
 # ============================================
 
 
-# Custom scientific infrared-style colormap: purple → blue → cyan → yellow → white
-SCI_IR_COLORMAP = LinearSegmentedColormap.from_list(
-    "sci_ir",
+# Neon quantum-style colormap (dark background + neon lights)
+NEON_COLORMAP = LinearSegmentedColormap.from_list(
+    "neon_quantum",
     [
-        (0.00, "#2d004b"),
-        (0.25, "#1d3f72"),
-        (0.50, "#38a8a6"),
-        (0.75, "#eed54f"),
-        (1.00, "#ffffff"),
-    ],
+        (0.00, "#001133"),   # deep neon blue (negative large)
+        (0.25, "#0077bb"),   # bright blue
+        (0.40, "#22ffaa"),   # neon cyan
+        (0.50, "#000000"),   # black at zero
+        (0.60, "#aa22ff"),   # neon purple
+        (0.75, "#ff66dd"),   # pink neon
+        (1.00, "#ffffff"),   # bright white
+    ]
 )
 
 
@@ -88,6 +90,7 @@ def load_all_matrices(path):
 
 def plot_matrix(mat, output_file, symmetric=True, dpi=300, title=None):
     plt.figure(figsize=(6, 5))
+    plt.style.use("dark_background")
 
     if symmetric:
         vmax = float(np.max(np.abs(mat)))
@@ -95,11 +98,11 @@ def plot_matrix(mat, output_file, symmetric=True, dpi=300, title=None):
     else:
         vmin, vmax = None, None
 
-    im = plt.imshow(mat, vmin=vmin, vmax=vmax, aspect="equal", cmap=SCI_IR_COLORMAP)
+    im = plt.imshow(mat, vmin=vmin, vmax=vmax, aspect="equal", cmap=NEON_COLORMAP)
     plt.colorbar(im, fraction=0.046, pad=0.04)
 
     if title is None:
-        title = "Molecular Matrix After Quantum-Chemical Modeling"
+        title = "Molecular Matrix (Neon Quantum Style)"
     plt.title(title)
     plt.xlabel("Column index")
     plt.ylabel("Row index")
@@ -108,7 +111,7 @@ def plot_matrix(mat, output_file, symmetric=True, dpi=300, title=None):
     out_path = Path(output_file)
     plt.savefig(out_path, dpi=dpi)
     plt.close()
-    print(f"Saved heatmap to: {out_path}")
+    print(f"Saved neon heatmap to: {out_path}")
 
 
 def run():
@@ -121,7 +124,7 @@ def run():
 
     for idx, mat in enumerate(matrices):
         out_file = out_dir / f"matrix_{idx:04d}.png"
-        title = f"Molecular Matrix After Quantum-Chemical Modeling #{idx}"
+        title = f"Molecular Matrix (Neon Quantum Style) #{idx}"
         plot_matrix(mat, out_file, symmetric=SYMMETRIC_COLOR, title=title)
 
 
