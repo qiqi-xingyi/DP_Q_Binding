@@ -8,16 +8,24 @@ import re
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 
 
 # ================== CONFIG ==================
 PREDICTIONS_FILE = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/SPHNet/outputs/train_quick/predictions/predictions.txt"
 
-# All heatmaps will be saved here (directory will be auto-created)
 OUTPUT_DIR = r"/Users/yuqizhang/Desktop/Code/DP_Quantum_binding/heatmaps"
-
-SYMMETRIC_COLOR = True
 # ============================================
+
+# Custom infrared-style colormap: purple -> yellow -> white
+IR_COLORMAP = LinearSegmentedColormap.from_list(
+    "infrared_pyw",
+    [
+        (0.0, "purple"),
+        (0.5, "yellow"),
+        (1.0, "white"),
+    ],
+)
 
 
 def load_all_matrices(path):
@@ -32,7 +40,6 @@ def load_all_matrices(path):
 
     A separator line is any line composed only of '-' and spaces.
     """
-
     shape_pattern = re.compile(r"\((\d+),\s*(\d+)\)")
 
     matrices = []
@@ -108,19 +115,33 @@ def load_all_matrices(path):
     return matrices
 
 
-def plot_matrix(mat, output_file, symmetric=True, dpi=300, title=None):
-    plt.figure(figsize=(6, 5))
-
-    if symmetric:
-        vmax = float(np.max(np.abs(mat)))
-        vmin = -vmax
-        im = plt.imshow(mat, vmin=vmin, vmax=vmax, aspect="equal")
+def normalize_matrix(mat):
+    """
+    Normalize a matrix to [0, 1].
+    If the matrix is constant, return all zeros.
+    """
+    mat = np.asarray(mat, dtype=float)
+    vmin = np.min(mat)
+    vmax = np.max(mat)
+    if vmax == vmin:
+        norm = np.zeros_like(mat)
     else:
-        im = plt.imshow(mat, aspect="equal")
+        norm = (mat - vmin) / (vmax - vmin)
+    return norm
+
+
+def plot_matrix(mat, output_file, dpi=300, title=None):
+    """
+    Plot a single normalized matrix with infrared-style colormap.
+    """
+    norm_mat = normalize_matrix(mat)
+
+    plt.figure(figsize=(6, 5))
+    im = plt.imshow(norm_mat, vmin=0.0, vmax=1.0, aspect="equal", cmap=IR_COLORMAP)
 
     plt.colorbar(im, fraction=0.046, pad=0.04)
     if title is None:
-        title = "Molecular Matrix After Quantum-Chemical Modeling"
+        title = "Molecular Matrix After Quantum-Chemical Modeling (Normalized)"
     plt.title(title)
     plt.xlabel("Column index")
     plt.ylabel("Row index")
@@ -145,8 +166,8 @@ def run():
 
     for idx, mat in enumerate(matrices):
         out_file = out_dir / f"matrix_{idx:04d}.png"
-        title = f"Molecular Matrix After Quantum-Chemical Modeling #{idx}"
-        plot_matrix(mat, out_file, symmetric=SYMMETRIC_COLOR, title=title)
+        title = f"Molecular Matrix After Quantum-Chemical Modeling (Normalized) #{idx}"
+        plot_matrix(mat, out_file, title=title)
 
 
 if __name__ == "__main__":
